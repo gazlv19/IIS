@@ -1,1 +1,188 @@
 
+
+const int TOUCH_PINS[5] = {4, 27, 15, 13, 12};
+const int LED_PINS[5]   = {16, 17, 18, 19, 21};
+const int NUM_PADS = 5;
+
+int OFFSET = 200;
+bool touchLowersReading = true;
+
+int baseline[NUM_PADS];
+int threshold[NUM_PADS];
+
+int sequence[100];
+int sequenceLength = 0;
+bool gameOver = false;
+
+const unsigned long stepPlaybackMs = 500;   // how long each LED stays on 
+const unsigned long stepGapMs = 250;        // gap between LEDs 
+const unsigned long playerTimeoutMs = 4000; // time allowed during player's turn
+const unsigned long debounceMs = 250;
+
+void calibrate() {
+  Serial.println("Calibrating. Keep all pads untouched for 2 seconds");
+  delay(500);
+
+  long sums[NUM_PADS] = {0};
+  const int samples = 40;
+  for (int s = 0; s < samples; s++) {
+    for (int i = 0; i < NUM_PADS; i++) {
+      sums[i] += touchRead(TOUCH_PINS[i]);
+    }
+    delay(20);
+  }
+
+  for (int i = 0; i < NUM_PADS; i++) {
+    baseline[i] = sums[i] / samples;
+    threshold[i] = touchLowersReading ? baseline[i] - OFFSET : baseline[i] + OFFSET;
+  }
+  Serial.println("Calibration done!");
+}
+
+
+
+bool isTouched(int pad) {
+  int value = touchRead(TOUCH_PINS[pad]);
+  return touchLowersReading ? (value < threshold[pad]) : (value > threshold[pad]);
+}
+
+void allLedsOff() {
+  for (int i = 0; i < NUM_PADS; i++) digitalWrite(LED_PINS[i], LOW);
+}
+
+void flashLed(int pad, unsigned long onMs) {
+  digitalWrite(LED_PINS[pad], HIGH);
+  delay(onMs);
+  digitalWrite(LED_PINS[pad], LOW);
+}
+
+void playbackSequence() {
+  Serial.print("Watch the sequence (length ");
+  Serial.print(sequenceLength);
+  Serial.println(")...");
+  delay(500);
+  for (int i = 0; i < sequenceLength; i++) {
+    flashLed(sequence[i], stepPlaybackMs);
+    delay(stepGapMs);
+  }
+  Serial.println("Your turn, repeat it back");
+}
+
+int waitForPlayerTouch(unsigned long timeoutMs) {
+  bool wasTouched[NUM_PADS] = {false};
+  unsigned long start = millis();
+
+  while (millis() - start < timeoutMs) {
+    for (int i = 0; i < NUM_PADS; i++) {
+      bool touchedNow = isTouched(i);
+
+      if (touchedNow && !wasTouched[i]) {
+        digitalWrite(LED_PINS[i], HIGH);  
+        delay(debounceMs);                
+        digitalWrite(LED_PINS[i], LOW);
+        return i;
+      }
+      wasTouched[i] = touchedNow;
+    }
+  }
+  return -1;
+}
+
+void addRandomStep() {
+  sequence[sequenceLength] = random(0, NUM_PADS);
+  sequenceLength++;
+}
+
+void endGame() {
+  Serial.print("Game over! You reached a sequence of ");
+  Serial.print(sequenceLength - 1);
+  Serial.println(". Send 'r' to play again.");
+  gameOver = true;
+
+  for (int i = 0; i < 3; i++) {
+    for (int p = 0; p < NUM_PADS; p++) digitalWrite(LED_PINS[p], HIGH);
+    delay(150);
+    allLedsOff();
+    delay(150);
+  }
+}
+
+void startNewGame() {
+  sequenceLength = 0;
+  gameOver = false;
+  allLedsOff();
+  Serial.println("\n--- New Game ---");
+  addRandomStep();
+}
+
+void waitForUserToStart() {
+  while (Serial.available()) Serial.read();
+
+  Serial.println();
+  Serial.println("Send any character to start the game:");
+  while (!Serial.available()) {
+    delay(50);
+  }
+  while (Serial.available()) Serial.read();
+  Serial.println("Starting!");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  for (int i = 0; i < NUM_PADS; i++) {
+    pinMode(LED_PINS[i], OUTPUT);
+    digitalWrite(LED_PINS[i], LOW);
+  }
+
+  randomSeed(analogRead(0)); 
+
+  Serial.println("Simon Says ");
+  calibrate();
+  waitForUserToStart();
+  startNewGame();
+}
+
+void loop() {
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == 'r' || c == 'R') startNewGame();
+  }
+
+  if (gameOver) {
+    delay(50);
+    return;
+  }
+
+  playbackSequence();
+
+  bool roundCorrect = true;
+  for (int i = 0; i < sequenceLength; i++) {
+    int touchedPad = waitForPlayerTouch(playerTimeoutMs);
+
+    if (touchedPad == -1) {
+      Serial.println("Too slow!");
+      roundCorrect = false;
+      break;
+    }
+
+    if (touchedPad != sequence[i]) {
+      Serial.print("Wrong pad! Expected ");
+      Serial.print(sequence[i]);
+      Serial.print(", got ");
+      Serial.println(touchedPad);
+      roundCorrect = false;
+      break;
+    }
+  }
+
+  if (!roundCorrect) {
+    endGame();
+    return;
+  }
+
+  Serial.println("Correct! Level up.");
+  delay(600);
+  addRandomStep();
+}
